@@ -7,59 +7,108 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     
-    <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- FIREBASE CONFIG ---
-        // In a real app, you would use your own config. 
-        // This uses the environment's provided config for the demo.
-        const firebaseConfig = JSON.parse(localStorage.getItem('firebase_config') || '{}');
-        // Fallback if local storage is empty (for the preview environment, this is handled automatically)
-        // For your GitHub pages, you will need to add your own config here eventually.
-        // For now, I'll use a placeholder that relies on the environment variables if available.
-        
-        // NOTE TO USER: When hosting on GitHub, replace the lines below with your actual Firebase Config keys.
-        const app = initializeApp(typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        
-        // Use a fixed App ID for the public leaderboard so everyone sees the same data
+        // --- CONFIGURATION SECTION ---
+        // 1. FOR LOCAL SCORES (Default): You don't need to do anything! It works out of the box.
+        // 2. FOR GLOBAL SCORES: Follow the guide I sent, get your keys, and paste them here.
+        const firebaseConfig = {
+            apiKey: "AIzaSyBhk9m7nWANYisanze2QOpiVgFI1I-EFYQ",
+            authDomain: "typing-game-leaderboard-93f1c.firebaseapp.com",
+            projectId: "typing-game-leaderboard-93f1c",
+            storageBucket: "typing-game-leaderboard-93f1c.firebasestorage.app",
+            messagingSenderId: "686410302356",
+            appId: "1:686410302356:web:1feae0f20800af14b34581",
+            measurementId: "G-Q4FRMZMN3S"
+        };
+        // -----------------------------
+
+        let db;
+        let auth;
+        let currentUser;
+        let useLocalStorage = true;
         const appId = 'typing-game-leaderboard-v1'; 
 
-        // --- AUTH & LEADERBOARD LOGIC ---
-        let currentUser = null;
+        // Initialize DB Strategy
+        function initDatabase() {
+            // Check if user provided valid config keys
+            if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY") {
+                try {
+                    const app = initializeApp(firebaseConfig);
+                    auth = getAuth(app);
+                    db = getFirestore(app);
+                    useLocalStorage = false;
+                    console.log("Connected to Firebase (Global Leaderboard)");
+                    
+                    signInAnonymously(auth);
+                    onAuthStateChanged(auth, (user) => {
+                        currentUser = user;
+                        if (user) subscribeToGlobalLeaderboard();
+                    });
+                } catch (e) {
+                    console.warn("Firebase Init Error:", e);
+                    initLocalLeaderboard();
+                }
+            } else {
+                // Check if environment provided config (for preview context inside this chat)
+                if (typeof __firebase_config !== 'undefined') {
+                    try {
+                        const app = initializeApp(JSON.parse(__firebase_config));
+                        auth = getAuth(app);
+                        db = getFirestore(app);
+                        useLocalStorage = false; 
+                        
+                        const initAuth = async () => {
+                             if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                await signInWithCustomToken(auth, __initial_auth_token);
+                             } else {
+                                await signInAnonymously(auth);
+                             }
+                        };
+                        initAuth();
 
-        // 1. Sign In
-        signInAnonymously(auth).catch(console.error);
-        
-        onAuthStateChanged(auth, (user) => {
-            currentUser = user;
-            if (user) {
-                subscribeToLeaderboard();
+                        onAuthStateChanged(auth, (user) => {
+                            currentUser = user;
+                            if (user) subscribeToGlobalLeaderboard();
+                        });
+                        return;
+                    } catch(e) { console.warn("Env config failed", e); }
+                }
+
+                console.log("No valid Firebase config found. Using Local Storage.");
+                initLocalLeaderboard();
             }
-        });
+        }
 
-        // 2. Fetch & Render Leaderboard
-        function subscribeToLeaderboard() {
-            const scoresRef = collection(db, 'artifacts', appId, 'public', 'data', 'scores');
-            
-            onSnapshot(scoresRef, (snapshot) => {
+        // --- LEADERBOARD LOGIC (Hybrid) ---
+
+        function initLocalLeaderboard() {
+            renderLeaderboard(getLocalScores());
+            // Show badge indicating local mode
+            const badge = document.getElementById('mode-badge');
+            if(badge) {
+                badge.innerText = "Local Mode";
+                badge.classList.remove('bg-green-100', 'text-green-800');
+                badge.classList.add('bg-gray-100', 'text-gray-600');
+            }
+        }
+
+        function getLocalScores() {
+            const stored = localStorage.getItem('typing_game_scores');
+            return stored ? JSON.parse(stored) : [];
+        }
+
+        function subscribeToGlobalLeaderboard() {
+             const scoresRef = collection(db, 'artifacts', appId, 'public', 'data', 'scores');
+             onSnapshot(scoresRef, (snapshot) => {
                 const scores = [];
                 snapshot.forEach(doc => scores.push(doc.data()));
-                
-                // Sort by WPM descending (Client-side sorting as per requirements)
                 scores.sort((a, b) => b.wpm - a.wpm);
-                
-                // Take top 10
-                const top10 = scores.slice(0, 10);
-                
-                renderLeaderboard(top10);
-            }, (error) => {
-                console.error("Error fetching leaderboard:", error);
-            });
+                renderLeaderboard(scores.slice(0, 10));
+             });
         }
 
         function renderLeaderboard(scores) {
@@ -88,34 +137,46 @@
             });
         }
 
-        // Helper to prevent XSS
         function escapeHtml(text) {
             if (!text) return 'Anonymous';
             return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
         }
 
-        // 3. Save Score Function (Exposed to Window)
-        window.submitScoreToFirebase = async (nickname, wpm) => {
-            if (!currentUser) return;
-            
+        // Exposed function for the UI to call
+        window.submitScore = async (nickname, wpm) => {
             const submitBtn = document.getElementById('submit-score-btn');
             submitBtn.disabled = true;
             submitBtn.innerText = 'Saving...';
 
             try {
-                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'scores'), {
+                const newScore = {
                     nickname: nickname || 'Anonymous',
                     wpm: wpm,
-                    timestamp: serverTimestamp(),
-                    uid: currentUser.uid
-                });
+                    timestamp: new Date().toISOString()
+                };
+
+                if (useLocalStorage) {
+                    // Local Save
+                    const scores = getLocalScores();
+                    scores.push(newScore);
+                    scores.sort((a, b) => b.wpm - a.wpm);
+                    localStorage.setItem('typing_game_scores', JSON.stringify(scores));
+                    renderLeaderboard(scores.slice(0, 10));
+                    await new Promise(r => setTimeout(r, 500)); // Fake delay for feel
+                } else {
+                    // Firebase Save
+                    if (auth.currentUser) {
+                         newScore.uid = auth.currentUser.uid;
+                         newScore.timestamp = serverTimestamp();
+                         await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'scores'), newScore);
+                    }
+                }
                 
-                // Show success state
+                // Success UI
                 submitBtn.innerText = 'Saved!';
                 submitBtn.classList.add('bg-green-600', 'hover:bg-green-700');
                 submitBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
                 
-                // Hide input after a moment
                 setTimeout(() => {
                     document.getElementById('nickname-section').classList.add('hidden');
                     document.getElementById('save-message').classList.remove('hidden');
@@ -127,6 +188,9 @@
                 submitBtn.disabled = false;
             }
         };
+
+        // Start everything
+        initDatabase();
     </script>
 
     <style>
@@ -303,7 +367,7 @@
             <div class="glass-panel w-full rounded-2xl p-6 h-full flex flex-col">
                 <div class="flex items-center justify-between mb-6 pb-4 border-b border-gray-100">
                     <h2 class="text-xl font-bold text-gray-800"><i class="fas fa-trophy text-yellow-500 mr-2"></i>Top 10</h2>
-                    <span class="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded">All Time</span>
+                    <span id="mode-badge" class="text-xs bg-green-100 text-green-800 px-2 py-1 rounded font-bold">Global Mode</span>
                 </div>
                 
                 <!-- List Container -->
@@ -550,7 +614,7 @@
                 alert("Please enter a nickname!");
                 return;
             }
-            window.submitScoreToFirebase(nickname, currentWPM);
+            window.submitScore(nickname, currentWPM);
         }
     </script>
 </body>
